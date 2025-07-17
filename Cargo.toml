@@ -1,0 +1,18 @@
+[package]
+name = "man-pager"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Using the git repo url here since crates.io currently doesn't seem to have the changes from commit 5e64b7c9a7350dc7dda541d9d5c7d868347b624d
+ansi-to-tui.git = "https://github.com/ratatui/ansi-to-tui.git"
+anyhow = "1.0.98"
+crossterm = "0.29.0"
+env_logger = "0.11.8"
+flate2 = { version = "1.1.2", features = ["rust_backend"] }
+ignore = { version = "0.4.23", features = ["simd-accel"] }
+libc = "0.2.174"
+log = "0.4.27"
+ratatui = { version = "0.29.0", features = ["macros", "scrolling-regions", "all-widgets"] }
+syntect = "5.2.0"
+# textwrap = "0.16.2"
