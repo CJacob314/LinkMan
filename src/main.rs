@@ -14,11 +14,7 @@ use ratatui::{
 	style::Style,
 	widgets::{Block, Borders, Paragraph, Wrap},
 };
-use std::{
-	fs::File,
-	io::{self, Read},
-	os::fd::AsRawFd,
-};
+use std::io::{self, Read};
 
 fn main() -> Result<()> {
 	let mut stdout = io::stdout();
@@ -26,16 +22,9 @@ fn main() -> Result<()> {
 	let mut content = Vec::new();
 	io::stdin().read_to_end(&mut content)?;
 
-	/* Will be reading keys from `/dev/tty` since we'll probably be reading from a piped stdin (fd
-	 * 0 has been duped over and is no longer a PTY/TTY).
-	 *
-	 * TODO: This solution doesn't work on MacOS, and I'll have to look into that at some point.
-	 */
-	let tty = File::open("/dev/tty")?;
-	let tty_fd = tty.as_raw_fd();
-
+	// Replace stdin fd with PTY/TTY fd from stderr
 	// SAFETY: Simple dup2 call made with two valid fds. There is valid error checking: program will panic if dup2 fails
-	if unsafe { libc::dup2(tty_fd, libc::STDIN_FILENO) } < 0 {
+	if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDIN_FILENO) } < 0 {
 		panic!("libc::dup2 call (to put /dev/tty fd over stdin fd) failed");
 	}
 
