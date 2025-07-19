@@ -57,12 +57,15 @@ where
 	B: ratatui::backend::Backend,
 {
 	let mut clicked_text = Paragraph::default();
-	let lines: Vec<String> = strip_str(content.as_ref())
-		.lines()
-		.map(|s| s.to_owned())
-		.collect();
-	let content = content.as_ref().as_bytes();
-	let num_lines = content.iter().filter(|&b| *b == b'\n').count() as u16; // saturating cast is desired here
+	let mut lines: Vec<String> = textwrap::wrap(
+		strip_str(content.as_ref()).as_str(),
+		terminal::size()?.0 as usize,
+	)
+	.into_iter()
+	.map(|cow| cow.into_owned())
+	.collect();
+	let mut processed_content = lines.join("\n");
+	let mut num_lines = lines.len() as u16; // saturating cast is desired here
 	let mut scroll: u16 = 0;
 	let mut height = 0;
 	loop {
@@ -71,9 +74,8 @@ where
 			height = area.height;
 			scroll = scroll.min(num_lines - height + 2);
 
-			// TODO: Allow text wrapping here (and adjust `word_at_position` function as needed)
 			let paragraph = Paragraph::new(
-				content
+				processed_content
 					.into_text()
 					.expect("ansi_to_tui IntoText::into_text call failed"),
 			)
@@ -141,6 +143,16 @@ where
 			}
 			Event::Mouse(mouse_event) if mouse_event.kind == MouseEventKind::ScrollUp => {
 				scroll = scroll.saturating_sub(1);
+			}
+			Event::Resize(cols, _) => {
+				// Terminal resize event => recalculate needed variables
+				lines = textwrap::wrap(strip_str(content.as_ref()).as_str(), cols as usize)
+					.into_iter()
+					.map(|cow| cow.into_owned())
+					.collect();
+
+				processed_content = lines.join("\n");
+				num_lines = lines.len() as u16; // saturating cast is desired here
 			}
 			_ => (),
 		}
