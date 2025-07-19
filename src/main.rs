@@ -209,13 +209,21 @@ unsafe fn word_at_position(
 
 	// Walk backward to find the start of the word
 	let mut start = col;
-	while start > 0 && !graphemes[start - 1].chars().all(char::is_whitespace) {
+	while start > 0
+		&& !graphemes[start - 1]
+			.chars()
+			.all(|c| char::is_whitespace(c) || (!matches!(c, '(' | ')') && char::is_ascii_punctuation(&c)))
+	{
 		start -= 1;
 	}
 
 	// Walk forward to find the end of the word
 	let mut end = col;
-	while end < graphemes.len() && !graphemes[end].chars().all(char::is_whitespace) {
+	while end < graphemes.len()
+		&& !graphemes[end]
+			.chars()
+			.all(|c| char::is_whitespace(c) || (!matches!(c, '(' | ')') && char::is_ascii_punctuation(&c)))
+	{
 		end += 1;
 	}
 
