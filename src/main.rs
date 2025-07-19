@@ -12,7 +12,7 @@ use ratatui::{
 	backend::CrosstermBackend,
 	layout::{Alignment, Constraint, Layout},
 	style::Style,
-	widgets::{Block, Borders, Clear, Paragraph, Wrap},
+	widgets::{Block, Borders, Clear, Paragraph},
 };
 use std::io;
 use strip_ansi_escapes::strip_str;
@@ -70,6 +70,8 @@ where
 			let area = frame.area();
 			height = area.height;
 			scroll = scroll.min(num_lines - height + 2);
+
+			// TODO: Allow text wrapping here (and adjust `word_at_position` function as needed)
 			let paragraph = Paragraph::new(
 				content
 					.into_text()
@@ -82,8 +84,7 @@ where
 					.title_alignment(Alignment::Center),
 			)
 			.style(Style::default())
-			.scroll((scroll, 0))
-			.wrap(Wrap { trim: false });
+			.scroll((scroll, 0));
 
 			frame.render_widget(paragraph, area);
 			let vertical_chunks =
@@ -157,9 +158,11 @@ unsafe fn word_at_position(
 	lines: &[String],
 	scroll: usize,
 	row: usize,
-	col: usize,
+	mut col: usize,
 ) -> Option<&str> {
 	use unicode_segmentation::UnicodeSegmentation;
+
+	col = col.checked_sub(1)?;
 
 	// Module in place to prevent accidental direct use of `static mut` pointer `LINE_OFFSETS_CACHE`.
 	mod offsets_cache {
@@ -177,7 +180,7 @@ unsafe fn word_at_position(
 		}
 	}
 
-	let line = lines.get(row.checked_add(scroll)?.checked_sub(2)?)?;
+	let line = lines.get(row.checked_add(scroll)?.checked_sub(1)?)?;
 
 	// Group line by Unicode extended grapheme clusters, as recommended by [UAX #29](https://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries)
 	let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(line.as_str(), true).collect();
