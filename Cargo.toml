@@ -1,5 +1,5 @@
 [package]
-name = "man-pager"
+name = "LinkMan"
 version = "0.1.0"
 edition = "2024"
 
@@ -18,3 +18,7 @@ strip-ansi-escapes = "0.2.1"
 syntect = "5.2.0"
 unicode-segmentation = "1.12.0"
 textwrap = "0.16.2"
+
+[[bin]]
+name = "linkman"
+path = "src/main.rs"

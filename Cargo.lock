@@ -3,6 +3,25 @@
 version = 4
 
 [[package]]
+name = "LinkMan"
+version = "0.1.0"
+dependencies = [
+ "ansi-to-tui",
+ "anyhow",
+ "crossterm 0.29.0",
+ "env_logger",
+ "flate2",
+ "ignore",
+ "libc",
+ "log",
+ "ratatui",
+ "strip-ansi-escapes",
+ "syntect",
+ "textwrap",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -590,25 +609,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
 dependencies = [
  "hashbrown",
-]
-
-[[package]]
-name = "man-pager"
-version = "0.1.0"
-dependencies = [
- "ansi-to-tui",
- "anyhow",
- "crossterm 0.29.0",
- "env_logger",
- "flate2",
- "ignore",
- "libc",
- "log",
- "ratatui",
- "strip-ansi-escapes",
- "syntect",
- "textwrap",
- "unicode-segmentation",
 ]
 
 [[package]]
