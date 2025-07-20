@@ -24,8 +24,8 @@ fn main() -> Result<()> {
     let content = io::read_to_string(io::stdin())?;
 
     // Replace stdin fd with PTY/TTY fd from stderr
-    // SAFETY: Simple dup2 call made with two valid fds. There is valid error checking: program will panic if dup2 fails
     if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDIN_FILENO) } < 0 {
+        // SAFETY: Simple dup2 call made with two valid fds. There is valid error checking: program will panic if dup2 fails
         panic!("libc::dup2 call (to put /dev/tty fd over stdin fd) failed");
     }
 
@@ -103,17 +103,17 @@ where
         })?;
 
         match event::read()? {
-            Event::Key(key) => match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Down | KeyCode::Char('j') => scroll += 1,
-                KeyCode::Up | KeyCode::Char('k') => {
+            Event::Key(key) => match (key.code, key.modifiers) {
+                (KeyCode::Char('q'), _) => break,
+                (KeyCode::Down, _) | (KeyCode::Char('j'), _) => scroll += 1,
+                (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                     scroll = scroll.saturating_sub(1);
                 }
-                KeyCode::Char('g') if key.modifiers == KeyModifiers::SHIFT => {
+                (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
                     scroll = num_lines - height + 2
                 }
-                KeyCode::Char('g') => scroll = 0,
-                KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => unsafe {
+                (KeyCode::Char('g'), _) => scroll = 0,
+                (KeyCode::Char('i'), KeyModifiers::ALT) => unsafe {
                     // SAFETY: This program is single-threaded
                     toggle_program_mode()?
                 },
