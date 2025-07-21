@@ -1,21 +1,29 @@
+mod man_page_info;
+use man_page_info::ManPageInfo;
+
 use ansi_to_tui::IntoText;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
         MouseEventKind,
     },
     execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Layout},
+    layout::Alignment,
     style::Style,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
-use std::io;
+use std::{
+    ffi::{CStr, CString},
+    fs, io,
+    os::unix::ffi::OsStrExt,
+    process, ptr,
+};
 use strip_ansi_escapes::strip_str;
 
 fn main() -> Result<()> {
@@ -34,6 +42,7 @@ fn main() -> Result<()> {
     execute!(
         stdout,
         EnterAlternateScreen,
+        Clear(ClearType::All),
         EnableMouseCapture, // Starting in MouseMode::LinkClicking
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -61,7 +70,6 @@ fn run<B>(terminal: &mut Terminal<B>, content: impl AsRef<str>) -> Result<()>
 where
     B: ratatui::backend::Backend,
 {
-    let mut clicked_text = Paragraph::default();
     let mut lines: Vec<String> = textwrap::wrap(
         strip_str(content.as_ref()).as_str(),
         terminal::size()?.0 as usize,
@@ -77,7 +85,7 @@ where
         terminal.draw(|frame| {
             let area = frame.area();
             height = area.height;
-            scroll = scroll.min(num_lines - height + 2);
+            scroll = scroll.min(num_lines.saturating_sub(height) + 2);
 
             let paragraph = Paragraph::new(
                 processed_content
@@ -94,12 +102,6 @@ where
             .scroll((scroll, 0));
 
             frame.render_widget(paragraph, area);
-            let vertical_chunks =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(area);
-            let layouts = Layout::horizontal([Constraint::Length(20), Constraint::Min(0)])
-                .split(vertical_chunks[1]);
-            frame.render_widget(Clear, layouts[0]);
-            frame.render_widget(&clicked_text, layouts[0]);
         })?;
 
         match event::read()? {
@@ -131,22 +133,10 @@ where
                         mouse_event.column as usize,
                     )
                 } {
-                    let mut info = String::from("Word: ");
-                    info.push_str(word_clicked);
-                    info.push_str(
-                        format!(
-                            "\n\nPosition: ({}, {})",
-                            mouse_event.row, mouse_event.column
-                        )
-                        .as_str(),
-                    );
-                    clicked_text = Paragraph::new(info).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("ClickedWordInfo")
-                            .title_alignment(Alignment::Center),
-                    );
-                    // TODO: Actually implement the "link" of "LinkMan" here
+                    if let Ok(info) = <&str as TryInto<ManPageInfo>>::try_into(word_clicked) {
+                        // Ignoring failures (user probably just clicked on something that wasn't a link)
+                        let _ = try_link_jump(&info).inspect(|_| drop(terminal.clear())); // clear terminal if command ran, to force a ratatui redraw
+                    }
                 }
             }
             Event::Mouse(mouse_event) if mouse_event.kind == MouseEventKind::ScrollDown => {
@@ -301,4 +291,55 @@ unsafe fn toggle_program_mode() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn try_link_jump(info: &ManPageInfo) -> Result<()> {
+    const MAN_PROGRAM: &CStr = c"man";
+    const SELF_PROGRAM: &str = "/proc/self/exe";
+
+    let canonicalized_self_program =
+        CString::new(fs::canonicalize(SELF_PROGRAM)?.into_os_string().as_bytes())?;
+
+    let (man_section_number, man_name) = info.as_args()?;
+    let args = [
+        MAN_PROGRAM.as_ptr(),
+        c"-P".as_ptr(),
+        canonicalized_self_program.as_ptr(),
+        man_section_number.as_ptr(),
+        man_name.as_ptr(),
+        ptr::null(),
+    ];
+
+    // SAFETY:: Write this (TODO)
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error()).with_context(|| "libc::fork failed");
+    }
+
+    if pid > 0 {
+        // Parent
+        let mut status = 0_i32;
+        if unsafe { libc::wait(&raw mut status) } < 0 {
+            return Err(io::Error::last_os_error()).with_context(|| "libc::wait in parent failed");
+        }
+
+        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == libc::EXIT_SUCCESS {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "Child meant to run another man command terminated unsuccessfully"
+            ))
+        }
+    } else {
+        // Child
+        if unsafe { libc::execvp(MAN_PROGRAM.as_ptr(), args.as_ptr()) } < 0 {
+            // This abnormal exit will be picked up by the parent's wait
+            process::abort();
+        } else {
+            // SAFETY: libc::execvp will not return on success: only a -1 on failure
+            unsafe {
+                std::hint::unreachable_unchecked();
+            }
+        }
+    }
 }
