@@ -218,7 +218,7 @@ unsafe fn word_at_position(
     let mut start = col;
     while start > 0
         && !graphemes[start - 1].chars().all(|c| {
-            char::is_whitespace(c) || (!matches!(c, '(' | ')') && char::is_ascii_punctuation(&c))
+            char::is_whitespace(c) || c == '/'
         })
     {
         start -= 1;
@@ -228,7 +228,7 @@ unsafe fn word_at_position(
     let mut end = col;
     while end < graphemes.len()
         && !graphemes[end].chars().all(|c| {
-            char::is_whitespace(c) || (!matches!(c, '(' | ')') && char::is_ascii_punctuation(&c))
+            char::is_whitespace(c) || c == '/'
         })
     {
         end += 1;
