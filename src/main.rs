@@ -135,7 +135,13 @@ where
                 } {
                     if let Ok(info) = <&str as TryInto<ManPageInfo>>::try_into(word_clicked) {
                         // Ignoring failures (user probably just clicked on something that wasn't a link)
-                        let _ = try_link_jump(&info).inspect(|_| drop(terminal.clear())); // clear terminal if command ran, to force a ratatui redraw
+                        if let Ok(_) = try_link_jump(&info) {
+                            // SAFETY:  Calling `apply_program_mode` from the same single thread every time is safe
+                            unsafe { apply_program_mode()? };
+                        }
+
+                        // Clear terminal even if try_link_jump failed, since man will print a failure message we'll need to draw over if the man page doesn't exist
+                        terminal.clear()?;
                     }
                 }
             }
@@ -261,6 +267,7 @@ unsafe fn word_at_position(
 ///   In this mode, the program captures all mouse input.
 /// - `TextSelection` will allow text selection, but does not allow the user to click on links.
 ///   They will either have to toggle the mode or use the keyboard to jump through a link (TODO).
+#[derive(Copy, Clone)]
 enum MouseMode {
     LinkClicking,
     TextSelection,
@@ -288,6 +295,22 @@ unsafe fn toggle_program_mode() -> Result<()> {
 
         // Update program state variable
         unsafe { PROGRAM_MODE = MouseMode::LinkClicking };
+    }
+
+    Ok(())
+}
+
+/// Applies the current [`PROGRAM_MODE`] by enabling or disabling mouse capture.
+/// This is used to verify we are correctly handling user clicks after a man command successfully runs.
+///
+/// # NOTE
+/// This function **must only be called from a single thread** due to reading from a `static mut` variable.
+unsafe fn apply_program_mode() -> Result<()> {
+    let mut stdout = io::stdout();
+
+    match unsafe { PROGRAM_MODE } {
+        MouseMode::LinkClicking => execute!(stdout, EnableMouseCapture)?,
+        MouseMode::TextSelection => execute!(stdout, DisableMouseCapture)?,
     }
 
     Ok(())
