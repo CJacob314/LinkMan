@@ -1,5 +1,5 @@
 mod man_page_info;
-use man_page_info::ManPageInfo;
+mod program_mode;
 
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result, anyhow};
@@ -11,6 +11,7 @@ use crossterm::{
     execute,
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use man_page_info::ManPageInfo;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -117,7 +118,7 @@ where
                 (KeyCode::Char('g'), _) => scroll = 0,
                 (KeyCode::Char('i'), KeyModifiers::ALT) => unsafe {
                     // SAFETY: This program is single-threaded
-                    toggle_program_mode()?
+                    program_mode::toggle()?
                 },
                 _ => (),
             },
@@ -133,11 +134,13 @@ where
                         mouse_event.column as usize,
                     )
                 } {
+                    // Ignoring failures (user probably just clicked on something that wasn't a link)
                     if let Ok(info) = <&str as TryInto<ManPageInfo>>::try_into(word_clicked) {
-                        // Ignoring failures (user probably just clicked on something that wasn't a link)
-                        if let Ok(_) = try_link_jump(&info) {
+                        if try_link_jump(&info).is_ok() {
+                            // There's no need to re-apply the program mouse mode unless man ran successfully (and therefore [probably] ran us again)
+
                             // SAFETY:  Calling `apply_program_mode` from the same single thread every time is safe
-                            unsafe { apply_program_mode()? };
+                            unsafe { program_mode::apply()? };
                         }
 
                         // Clear terminal even if try_link_jump failed, since man will print a failure message we'll need to draw over if the man page doesn't exist
@@ -217,9 +220,9 @@ unsafe fn word_at_position(
     // Walk backward to find the start of the word
     let mut start = col;
     while start > 0
-        && !graphemes[start - 1].chars().all(|c| {
-            char::is_whitespace(c) || c == '/'
-        })
+        && !graphemes[start - 1]
+            .chars()
+            .all(|c| char::is_whitespace(c) || c == '/')
     {
         start -= 1;
     }
@@ -227,9 +230,9 @@ unsafe fn word_at_position(
     // Walk forward to find the end of the word
     let mut end = col;
     while end < graphemes.len()
-        && !graphemes[end].chars().all(|c| {
-            char::is_whitespace(c) || c == '/'
-        })
+        && !graphemes[end]
+            .chars()
+            .all(|c| char::is_whitespace(c) || c == '/')
     {
         end += 1;
     }
@@ -260,60 +263,6 @@ unsafe fn word_at_position(
 
         Some(&line[start_byte..end_byte])
     }
-}
-
-/// Holds two possible program states:
-/// - `LinkClicking` may prevent text selection, but allows the user to click on, for example, `mount(2)` to open the `mount(2)` man-page.
-///   In this mode, the program captures all mouse input.
-/// - `TextSelection` will allow text selection, but does not allow the user to click on links.
-///   They will either have to toggle the mode or use the keyboard to jump through a link (TODO).
-#[derive(Copy, Clone)]
-enum MouseMode {
-    LinkClicking,
-    TextSelection,
-}
-
-static mut PROGRAM_MODE: MouseMode = MouseMode::LinkClicking;
-
-/// Toggles the [`PROGRAM_MODE`] (between [`MouseMode::LinkClicking`] and
-/// [`MouseMode::TextSelection`].
-///
-/// # NOTE
-/// This function **must only be called from a single thread** due to writing to a `static mut` variable.
-unsafe fn toggle_program_mode() -> Result<()> {
-    let mut stdout = io::stdout();
-
-    if unsafe { matches!(PROGRAM_MODE, MouseMode::LinkClicking) } {
-        // Allow text selection by disabling mouse capture
-        execute!(stdout, DisableMouseCapture)?;
-
-        // Update program state variable
-        unsafe { PROGRAM_MODE = MouseMode::TextSelection };
-    } else {
-        // Allow link-clicking by enabling mouse capture
-        execute!(stdout, EnableMouseCapture)?;
-
-        // Update program state variable
-        unsafe { PROGRAM_MODE = MouseMode::LinkClicking };
-    }
-
-    Ok(())
-}
-
-/// Applies the current [`PROGRAM_MODE`] by enabling or disabling mouse capture.
-/// This is used to verify we are correctly handling user clicks after a man command successfully runs.
-///
-/// # NOTE
-/// This function **must only be called from a single thread** due to reading from a `static mut` variable.
-unsafe fn apply_program_mode() -> Result<()> {
-    let mut stdout = io::stdout();
-
-    match unsafe { PROGRAM_MODE } {
-        MouseMode::LinkClicking => execute!(stdout, EnableMouseCapture)?,
-        MouseMode::TextSelection => execute!(stdout, DisableMouseCapture)?,
-    }
-
-    Ok(())
 }
 
 fn try_link_jump(info: &ManPageInfo) -> Result<()> {
