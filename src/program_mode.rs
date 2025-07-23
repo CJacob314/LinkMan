@@ -24,7 +24,7 @@ static mut PROGRAM_MODE: MouseMode = MouseMode::LinkClicking;
 ///
 /// # NOTE
 /// This function **must only be called from a single thread** due to writing to a `static mut` variable.
-pub unsafe fn toggle() -> Result<()> {
+pub(crate) unsafe fn toggle() -> Result<()> {
     let mut stdout = io::stdout();
 
     if unsafe { matches!(PROGRAM_MODE, MouseMode::LinkClicking) } {
@@ -49,7 +49,7 @@ pub unsafe fn toggle() -> Result<()> {
 ///
 /// # NOTE
 /// This function **must only be called from a single thread** due to reading from a `static mut` variable.
-pub unsafe fn apply() -> Result<()> {
+pub(crate) unsafe fn apply() -> Result<()> {
     let mut stdout = io::stdout();
 
     match unsafe { PROGRAM_MODE } {

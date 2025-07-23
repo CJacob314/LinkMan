@@ -1,5 +1,6 @@
 mod man_page_info;
 mod program_mode;
+mod text_handling;
 
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result, anyhow};
@@ -20,10 +21,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use std::{
+    env,
     ffi::{CStr, CString},
-    fs, io,
-    os::unix::ffi::OsStrExt,
-    process, ptr,
+    fs, io, ptr,
 };
 use strip_ansi_escapes::strip_str;
 
@@ -31,6 +31,20 @@ fn main() -> Result<()> {
     let mut stdout = io::stdout();
 
     let content = io::read_to_string(io::stdin())?;
+    let man_string = text_handling::get_man_string(&content)?;
+
+    /* First, check if we've received `--subsequent-run`. If we have, everything is dandy. If we
+     * haven't, we'll need to parse the man page and section we were run on, set MANWIDTH, and
+     * rerun the command. If we don't, the alignment will be wonky.
+     */
+    if env::args().skip(1).all(|s| &s != "--subsequent-run") {
+        // SAFETY: This program has no "threads" in the sense that no two Linux tasks will ever share the same virtual memory space,
+        // so this is safe.
+        unsafe { set_man_width_variable() }?;
+        let man_page_info = ManPageInfo::try_from(man_string.as_str())?;
+
+        exec_self(&man_page_info)?;
+    }
 
     // Replace stdin fd with PTY/TTY fd from stderr
     if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDIN_FILENO) } < 0 {
@@ -49,7 +63,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run(&mut terminal, &content);
+    let res = run(&mut terminal, &content, man_string);
 
     // Restore terminal
     terminal::disable_raw_mode()?;
@@ -67,21 +81,28 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run<B>(terminal: &mut Terminal<B>, content: impl AsRef<str>) -> Result<()>
+fn run<B>(
+    terminal: &mut Terminal<B>,
+    content: impl AsRef<str>,
+    man_page_id: impl AsRef<str>,
+) -> Result<()>
 where
     B: ratatui::backend::Backend,
 {
-    let mut lines: Vec<String> = textwrap::wrap(
-        strip_str(content.as_ref()).as_str(),
-        terminal::size()?.0 as usize,
-    )
-    .into_iter()
-    .map(|cow| cow.into_owned())
-    .collect();
+    let title = format!("LinkMan - {}", man_page_id.as_ref());
+    // TODO: Evaluate whether you need the Vec `lines` to hold owned Strings (you *might* be okay with holding just `&str`s)
+    let mut lines: Vec<String> = strip_str(content.as_ref())
+        .lines()
+        .map(|s| s.to_owned())
+        .collect();
     let mut processed_content = lines.join("\n");
     let mut num_lines = lines.len() as u16; // saturating cast is desired here
     let mut scroll: u16 = 0;
     let mut height = 0;
+
+    // SAFETY: This program has no "threads" in the sense that no two Linux tasks will ever share the same virtual memory space,
+    // so this is safe.
+    unsafe { set_man_width_variable() }?;
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -96,7 +117,7 @@ where
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("LinkMan")
+                    .title(title.as_str())
                     .title_alignment(Alignment::Center),
             )
             .style(Style::default())
@@ -127,7 +148,7 @@ where
             {
                 // SAFETY: Calling `word_at_position` from the same single thread every time is safe
                 if let Some(word_clicked) = unsafe {
-                    word_at_position(
+                    text_handling::word_at_position(
                         &lines,
                         scroll as usize,
                         mouse_event.row as usize,
@@ -156,6 +177,7 @@ where
             }
             Event::Resize(cols, _) => {
                 // Terminal resize event => recalculate needed variables
+                // TODO: Evaluate how badly you need *THIS* textwrap::wrap call as well. I'm thinking you'll likely need this one a bit more than the last (already removed) one.
                 lines = textwrap::wrap(strip_str(content.as_ref()).as_str(), cols as usize)
                     .into_iter()
                     .map(|cow| cow.into_owned())
@@ -163,6 +185,10 @@ where
 
                 processed_content = lines.join("\n");
                 num_lines = lines.len() as u16; // saturating cast is desired here
+
+                // SAFETY: This program has no "threads" in the sense that no two Linux tasks will ever share the same virtual memory space,
+                // so this is safe.
+                unsafe { set_man_width_variable() }?;
             }
             _ => (),
         }
@@ -171,117 +197,7 @@ where
     Ok(())
 }
 
-/// Returns a reference ([`&str`]) the word at the given position in the given lines of text.
-///
-/// # NOTE
-/// This function is `unsafe` because it can only be called from a single-threaded context.
-/// This is due to the fact that it uses a `static mut` map to cache computations.
-unsafe fn word_at_position(
-    lines: &[String],
-    scroll: usize,
-    row: usize,
-    mut col: usize,
-) -> Option<&str> {
-    use unicode_segmentation::UnicodeSegmentation;
-
-    col = col.checked_sub(1)?;
-
-    // Module in place to prevent accidental direct use of `static mut` pointer `LINE_OFFSETS_CACHE`.
-    mod offsets_cache {
-        use std::collections::HashMap;
-        use std::ptr;
-        static mut LINE_OFFSETS_CACHE: *mut HashMap<String, Vec<usize>> = ptr::null_mut();
-
-        pub(super) fn get_cache<'a>() -> &'a mut HashMap<String, Vec<usize>> {
-            unsafe {
-                if LINE_OFFSETS_CACHE.is_null() {
-                    LINE_OFFSETS_CACHE = Box::into_raw(Box::new(HashMap::new()));
-                }
-                &mut *LINE_OFFSETS_CACHE
-            }
-        }
-    }
-
-    let line = lines.get(row.checked_add(scroll)?.checked_sub(1)?)?;
-
-    // Group line by Unicode extended grapheme clusters, as recommended by [UAX #29](https://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries)
-    let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(line.as_str(), true).collect();
-
-    if col >= graphemes.len() {
-        // Column is out of bounds
-        return None;
-    }
-
-    // If the grapheme is whitespace, return None
-    if graphemes[col].chars().all(char::is_whitespace) {
-        return None;
-    }
-
-    // Walk backward to find the start of the word
-    let mut start = col;
-    while start > 0
-        && !graphemes[start - 1]
-            .chars()
-            .all(|c| char::is_whitespace(c) || c == '/')
-    {
-        start -= 1;
-    }
-
-    // Walk forward to find the end of the word
-    let mut end = col;
-    while end < graphemes.len()
-        && !graphemes[end]
-            .chars()
-            .all(|c| char::is_whitespace(c) || c == '/')
-    {
-        end += 1;
-    }
-
-    // TODO: Benchmark this code with vs. without the cache and use whichever version was faster
-    let offsets_cache = offsets_cache::get_cache();
-    if let Some(offsets) = offsets_cache.get(line.as_str()) {
-        // Cached offsets were present. Use those to compute returned string slice.
-        let start_byte = offsets[start];
-        let end_byte = offsets[end];
-
-        Some(&line[start_byte..end_byte])
-    } else {
-        // Compute cached offsets
-        let mut byte_offsets = Vec::with_capacity(graphemes.len() + 1);
-        let mut offset_accum = 0;
-        byte_offsets.push(offset_accum);
-        for grapheme in &graphemes {
-            offset_accum += grapheme.len();
-            byte_offsets.push(offset_accum);
-        }
-
-        let start_byte = byte_offsets[start];
-        let end_byte = byte_offsets[end];
-
-        // Update cache
-        offsets_cache.insert(line.clone(), byte_offsets);
-
-        Some(&line[start_byte..end_byte])
-    }
-}
-
 fn try_link_jump(info: &ManPageInfo) -> Result<()> {
-    const MAN_PROGRAM: &CStr = c"man";
-    const SELF_PROGRAM: &str = "/proc/self/exe";
-
-    let canonicalized_self_program =
-        CString::new(fs::canonicalize(SELF_PROGRAM)?.into_os_string().as_bytes())?;
-
-    let (man_section_number, man_name) = info.as_args()?;
-    let args = [
-        MAN_PROGRAM.as_ptr(),
-        c"-P".as_ptr(),
-        canonicalized_self_program.as_ptr(),
-        man_section_number.as_ptr(),
-        man_name.as_ptr(),
-        ptr::null(),
-    ];
-
     // SAFETY:: Write this (TODO)
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -299,19 +215,82 @@ fn try_link_jump(info: &ManPageInfo) -> Result<()> {
             Ok(())
         } else {
             Err(anyhow!(
-                "Child meant to run another man command terminated unsuccessfully"
+                "Fork-child meant to run another man command terminated unsuccessfully"
             ))
         }
     } else {
         // Child
-        if unsafe { libc::execvp(MAN_PROGRAM.as_ptr(), args.as_ptr()) } < 0 {
+        exec_self(info).inspect_err(|e| {
             // This abnormal exit will be picked up by the parent's wait
-            process::abort();
-        } else {
-            // SAFETY: libc::execvp will not return on success: only a -1 on failure
-            unsafe {
-                std::hint::unreachable_unchecked();
-            }
+            panic!("{e}");
+        })
+    }
+}
+
+fn exec_self(info: &ManPageInfo) -> Result<()> {
+    let canonicalized_self_program = fs::canonicalize(SELF_PROGRAM)?;
+    let pager = CString::new(format!(
+        "{} --subsequent-run",
+        canonicalized_self_program.display()
+    ))?;
+
+    let (man_section_number, man_name) = info.as_args()?;
+    let args = [
+        MAN_PROGRAM.as_ptr(),
+        c"-P".as_ptr(),
+        pager.as_ptr(),
+        man_section_number.as_ptr(),
+        man_name.as_ptr(),
+        ptr::null(),
+    ];
+
+    if unsafe { libc::execvp(MAN_PROGRAM.as_ptr(), args.as_ptr()) } < 0 {
+        Err(io::Error::last_os_error()).with_context(|| "libc::execvp call failed")
+    } else {
+        // SAFETY: libc::execvp will not return on success: only a -1 on failure
+        unsafe {
+            std::hint::unreachable_unchecked();
         }
     }
 }
+
+/// Sets the `MANWIDTH` environment variable to an appropriate width.
+///
+/// If `MANWIDTH` is already set and parsable as a [`u16`], this function simply returns
+/// a [`std::result::Result::Ok`]. This is important since we are likely to be a child of another
+/// `linkman` process that has already set `MANWIDTH` (and already subtracted 2).
+/// Otherwise, it sets `MANWIDTH` to the number of terminal columns minus 2 (for the left and right
+/// borders).
+/// If the terminal size cannot be determined, it falls back to 78 (since `man(1)` also assumes a
+/// default width of 80).
+///
+/// # NOTE
+/// The caller of [`set_man_width_variable`] **must ensure** that there are no other threads
+/// concurrently reading from or writing to any environment variables.
+unsafe fn set_man_width_variable() -> Result<()> {
+    // Return early if the `MANWIDTH` environment variable is set to a u16-parsable string
+    if env::var("MANWIDTH")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let manwidth = terminal::size()
+        .map(|(cols, _)| cols)
+        .unwrap_or(80)
+        .saturating_sub(2);
+
+    // SAFETY: Because the caller has upheld that no other threads are concurrently reading from or
+    // writing to any other environment variables, this is safe. See `std::env::set_var`
+    // documentation for more information.
+    unsafe {
+        env::set_var("MANWIDTH", format!("{manwidth}"));
+    }
+
+    Ok(())
+}
+
+const MAN_PROGRAM: &CStr = c"man";
+const SELF_PROGRAM: &str = "/proc/self/exe";

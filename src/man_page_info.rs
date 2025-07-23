@@ -18,17 +18,17 @@ impl Display for StringNotManRefError {
 
 impl Error for StringNotManRefError {}
 
-impl<'a> TryInto<ManPageInfo<'a>> for &'a str {
+impl<'a> TryFrom<&'a str> for ManPageInfo<'a> {
     type Error = StringNotManRefError;
 
-    fn try_into(self) -> Result<ManPageInfo<'a>, Self::Error> {
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         // Disallow path separator and U+0000
-        if self.chars().any(|c| c == '\x00' || c == '/') {
+        if value.chars().any(|c| c == '\x00' || c == '/') {
             return Err(StringNotManRefError);
         }
 
-        if let Some(open_paren_index) = self.find('(') {
-            let next_char = &self[open_paren_index..]
+        if let Some(open_paren_index) = value.find('(') {
+            let next_char = &value[open_paren_index..]
                 .chars()
                 .nth(1)
                 .ok_or(StringNotManRefError)?;
@@ -36,9 +36,9 @@ impl<'a> TryInto<ManPageInfo<'a>> for &'a str {
                 .is_ascii_digit()
                 .then(|| {
                     Ok(ManPageInfo {
-                        name: &self[..open_paren_index],
-                        section_number: &self[(open_paren_index + 1)..(open_paren_index + 2)], // This subslicing is safe since we know
-                                                                                               // next_char was an ASCII digit
+                        name: &value[..open_paren_index],
+                        section_number: &value[(open_paren_index + 1)..(open_paren_index + 2)], // This subslicing is safe since we know
+                                                                                                // next_char was an ASCII digit
                     })
                 })
                 .ok_or(StringNotManRefError)?
