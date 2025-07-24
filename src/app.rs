@@ -12,7 +12,7 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    layout::Alignment,
+    layout::{Alignment, Constraint, Layout},
     prelude::Backend,
     style::Style,
     widgets::{Block, Borders, Paragraph},
@@ -82,6 +82,10 @@ impl App {
             .scroll
             .min(self.num_lines.saturating_sub(self.height) + 2);
 
+        // Split screen vertically into space for the content, and a single line for commands/searching
+        let chunks = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(area);
+
+        // Make content Paragraph
         let paragraph = Paragraph::new(
             self.processed_content
                 .into_text()
@@ -96,7 +100,7 @@ impl App {
         .style(Style::default())
         .scroll((self.scroll, 0));
 
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, chunks[0]);
     }
 
     fn handle_event<B>(&mut self, terminal: &mut Terminal<B>) -> Result<bool>
@@ -121,7 +125,8 @@ impl App {
                 _ => (),
             },
             Event::Mouse(mouse_event)
-                if matches!(mouse_event.kind, MouseEventKind::Up(MouseButton::Left)) =>
+                if matches!(mouse_event.kind, MouseEventKind::Up(MouseButton::Left))
+                    && (1..=self.height - 3).contains(&mouse_event.row) =>
             {
                 // SAFETY: Calling `word_at_position` from the same single thread every time is safe
                 if let Some(word_clicked) = unsafe {
