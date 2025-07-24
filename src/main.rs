@@ -1,22 +1,13 @@
 mod app;
 mod man_page_info;
-mod program_mode;
 mod text_handling;
 
 use anyhow::Result;
 use app::App;
-use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
-    execute,
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use man_page_info::ManPageInfo;
-use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{env, io};
 
 fn main() -> Result<()> {
-    let mut stdout = io::stdout();
-
     let content = io::read_to_string(io::stdin())?;
     let man_string = text_handling::get_man_string(&content)?;
 
@@ -40,26 +31,13 @@ fn main() -> Result<()> {
     }
 
     // Setup terminal
-    terminal::enable_raw_mode()?;
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        Clear(ClearType::All),
-        EnableMouseCapture, // Starting in MouseMode::LinkClicking
-    )?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = ratatui::init();
 
     let app = App::new(content, man_string);
     let res = app.run(&mut terminal);
 
     // Restore terminal
-    terminal::disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-    )?;
+    ratatui::restore();
     terminal.show_cursor()?;
 
     // Now that we've restored the terminal, return a Result::Err returned by `run` up.

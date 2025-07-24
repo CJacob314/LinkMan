@@ -7,8 +7,12 @@ use std::{
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result, anyhow};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind},
-    terminal,
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind,
+    },
+    execute,
+    terminal::{self, Clear, ClearType},
 };
 use ratatui::{
     Frame, Terminal,
@@ -19,7 +23,7 @@ use ratatui::{
 };
 use strip_ansi_escapes::strip_str;
 
-use crate::{ManPageInfo, program_mode, text_handling};
+use crate::{ManPageInfo, text_handling};
 
 /* TODO: Finish moving from the giant `run` function to this App struct, whose fields will have the
  * mutable app state and whose impl methods will do individual pieces of what the ungodly-big `run`
@@ -36,6 +40,7 @@ pub struct App {
     num_lines: u16,
     scroll: u16,
     height: u16,
+    mouse_mode: MouseMode,
 }
 
 impl App {
@@ -44,8 +49,6 @@ impl App {
         let lines: Vec<String> = strip_str(&content).lines().map(|s| s.to_owned()).collect();
         let processed_content = lines.join("\n");
         let num_lines = lines.len() as u16;
-        let scroll = 0;
-        let height = 0;
 
         Self {
             content,
@@ -53,8 +56,7 @@ impl App {
             lines,
             processed_content,
             num_lines,
-            scroll,
-            height,
+            ..Default::default()
         }
     }
 
@@ -62,7 +64,17 @@ impl App {
     where
         B: ratatui::backend::Backend,
     {
+        // SAFETY: This program has no "threads" in the sense that no two Linux tasks will ever share the same virtual memory space,
+        // so this is safe.
         unsafe { set_man_width_variable()? };
+
+        let mut stdout = io::stdout();
+
+        execute!(
+            stdout,
+            Clear(ClearType::All),
+            EnableMouseCapture, // Starting in MouseMode::LinkClicking
+        )?;
 
         loop {
             terminal.draw(|frame| self.render(frame))?;
@@ -71,6 +83,8 @@ impl App {
                 break;
             }
         }
+
+        execute!(stdout, DisableMouseCapture)?;
 
         Ok(())
     }
@@ -118,10 +132,7 @@ impl App {
                     self.scroll = self.num_lines - self.height + 2
                 }
                 (KeyCode::Char('g'), _) => self.scroll = 0,
-                (KeyCode::Char('i'), KeyModifiers::ALT) => unsafe {
-                    // SAFETY: This program is single-threaded
-                    program_mode::toggle()?
-                },
+                (KeyCode::Char('i'), KeyModifiers::ALT) => self.toggle_mouse_mode()?,
                 _ => (),
             },
             Event::Mouse(mouse_event)
@@ -142,8 +153,7 @@ impl App {
                         if try_link_jump(&info).is_ok() {
                             // There's no need to re-apply the program mouse mode unless man ran successfully (and therefore [probably] ran us again)
 
-                            // SAFETY:  Calling `apply_program_mode` from the same single thread every time is safe
-                            unsafe { program_mode::apply()? };
+                            self.apply_mouse_mode()?;
                         }
 
                         // Clear terminal even if try_link_jump failed, since man will print a failure message we'll need to draw over if the man page doesn't exist
@@ -176,6 +186,41 @@ impl App {
         }
 
         Ok(true)
+    }
+
+    /// Toggles the [`App::mouse_mode`] (between [`MouseMode::LinkClicking`] and
+    /// [`MouseMode::TextSelection`].
+    fn toggle_mouse_mode(&mut self) -> Result<()> {
+        let mut stdout = io::stdout();
+
+        if matches!(self.mouse_mode, MouseMode::LinkClicking) {
+            // Allow text selection by disabling mouse capture
+            execute!(stdout, DisableMouseCapture)?;
+
+            // Update program state
+            self.mouse_mode = MouseMode::TextSelection;
+        } else {
+            // Allow link-clicking by enabling mouse capture
+            execute!(stdout, EnableMouseCapture)?;
+
+            // Update program state
+            self.mouse_mode = MouseMode::LinkClicking;
+        }
+
+        Ok(())
+    }
+
+    /// Applies the current [`App::mouse_mode`] by enabling or disabling mouse capture.
+    /// This is used to verify we are correctly handling user clicks after a man command successfully runs.
+    fn apply_mouse_mode(&self) -> Result<()> {
+        let mut stdout = io::stdout();
+
+        match self.mouse_mode {
+            MouseMode::LinkClicking => execute!(stdout, EnableMouseCapture)?,
+            MouseMode::TextSelection => execute!(stdout, DisableMouseCapture)?,
+        }
+
+        Ok(())
     }
 }
 
@@ -272,6 +317,18 @@ pub(crate) fn exec_self(info: &ManPageInfo) -> Result<()> {
             std::hint::unreachable_unchecked();
         }
     }
+}
+
+/// Holds two possible program states:
+/// - `LinkClicking` may prevent text selection, but allows the user to click on, for example, `mount(2)` to open the `mount(2)` man-page.
+///   In this mode, the program captures all mouse input.
+/// - `TextSelection` will allow text selection, but does not allow the user to click on links.
+///   They will either have to toggle the mode or use the keyboard to jump through a link (TODO).
+#[derive(Copy, Clone, Debug, Default)]
+enum MouseMode {
+    #[default]
+    LinkClicking,
+    TextSelection,
 }
 
 const MAN_PROGRAM: &CStr = c"man";
