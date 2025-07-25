@@ -6,7 +6,7 @@ use std::{
 
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result, anyhow};
-use crossterm::{
+use ratatui::crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
         MouseEventKind,
@@ -22,6 +22,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use strip_ansi_escapes::strip_str;
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{ManPageInfo, text_handling};
 
@@ -41,6 +42,8 @@ pub struct App {
     scroll: u16,
     height: u16,
     mouse_mode: MouseMode,
+    search_input: Input,
+    search_mode: SearchMode,
 }
 
 impl App {
@@ -76,6 +79,13 @@ impl App {
             EnableMouseCapture, // Starting in MouseMode::LinkClicking
         )?;
 
+        // Register panic handler to disable mouse capture
+        let old_panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |hook_info| {
+            drop(execute!(io::stdout(), DisableMouseCapture));
+            old_panic_hook(hook_info);
+        }));
+
         loop {
             terminal.draw(|frame| self.render(frame))?;
 
@@ -90,6 +100,9 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        const SEARCH_PREFIX: &str = "Search: ";
+        const SEARCH_PREFIX_LEN: u16 = SEARCH_PREFIX.len() as u16;
+
         let area = frame.area();
         self.height = area.height;
         self.scroll = self
@@ -100,7 +113,7 @@ impl App {
         let chunks = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(area);
 
         // Make content Paragraph
-        let paragraph = Paragraph::new(
+        let content_paragraph = Paragraph::new(
             self.processed_content
                 .into_text()
                 .expect("ansi_to_tui IntoText::into_text call failed"),
@@ -114,13 +127,36 @@ impl App {
         .style(Style::default())
         .scroll((self.scroll, 0));
 
-        frame.render_widget(paragraph, chunks[0]);
+        frame.render_widget(content_paragraph, chunks[0]);
+
+        // If the user's typing a search query...
+        if self.search_mode == SearchMode::TypingQuery {
+            let input_text = format!("{}{}", SEARCH_PREFIX, self.search_input.value());
+            let input_paragraph = Paragraph::new(input_text);
+
+            // Render typed query so far
+            frame.render_widget(input_paragraph, chunks[1]);
+
+            // Set cursor position
+            let pos = self.search_input.visual_cursor() as u16;
+            frame.set_cursor_position((pos + SEARCH_PREFIX_LEN, area.height));
+        }
     }
 
     fn handle_event<B>(&mut self, terminal: &mut Terminal<B>) -> Result<bool>
     where
         B: Backend,
     {
+        if self.search_mode == SearchMode::TypingQuery {
+            match event::read()? {
+                Event::Key(key) if key.code == KeyCode::Enter => self.perform_search()?,
+                Event::Key(key) if key.code == KeyCode::Esc => self.cancel_search(),
+                non_enter_event => drop(self.search_input.handle_event(&non_enter_event)),
+            }
+
+            return Ok(true);
+        }
+
         match event::read()? {
             Event::Key(key) => match (key.code, key.modifiers) {
                 (KeyCode::Char('q'), _) => return Ok(false),
@@ -133,6 +169,7 @@ impl App {
                 }
                 (KeyCode::Char('g'), _) => self.scroll = 0,
                 (KeyCode::Char('i'), KeyModifiers::ALT) => self.toggle_mouse_mode()?,
+                (KeyCode::Char('/'), _) => self.search_mode = SearchMode::TypingQuery,
                 _ => (),
             },
             Event::Mouse(mouse_event)
@@ -221,6 +258,18 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn cancel_search(&mut self) {
+        self.search_input.reset();
+        self.search_mode = SearchMode::NoSearch;
+    }
+
+    fn perform_search(&mut self) -> Result<()> {
+        panic!(
+            "TODO: Implement search. Text for which to search was: \"{}\"",
+            self.search_input.value()
+        );
     }
 }
 
@@ -329,6 +378,13 @@ enum MouseMode {
     #[default]
     LinkClicking,
     TextSelection,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum SearchMode {
+    #[default]
+    NoSearch,
+    TypingQuery,
 }
 
 const MAN_PROGRAM: &CStr = c"man";

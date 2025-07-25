@@ -52,7 +52,7 @@ pub unsafe fn word_at_position(
     while start > 0
         && !graphemes[start - 1]
             .chars()
-            .all(|c| char::is_whitespace(c) || c == '/')
+            .all(|c| char::is_whitespace(c) || c == '/' || c == '(' || c == ')')
     {
         start -= 1;
     }
